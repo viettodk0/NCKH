@@ -1,3 +1,4 @@
 # Bo qua cac thu muc build va dist khi bien dich pyinstaller
 Py-Photo/build/
 Py-Photo/dist/
+Py-Photo/photo_editor_app.exe
