@@ -25,8 +25,8 @@ class PhotoEditorApp(ctk.CTk):
         super().__init__()
 
         # Thiết lập cửa sổ chính
-        self.title("Phần mềm chỉnh sửa màu sắc & tách nền - OpenCV & CustomTkinter")
-        self.geometry("1000, 700")
+        self.title("Phần mềm chỉnh sửa màu sắc & tách nền & tăng độ phân giải AI - OpenCV & CustomTkinter")
+        self.geometry("1000, 720")
         self.minsize(900, 600)
         
         # Biến chứa dữ liệu ảnh nền chính
@@ -48,7 +48,7 @@ class PhotoEditorApp(ctk.CTk):
 
     def create_control_panel(self):
         """Tạo bảng điều khiển bên trái chứa các nút bấm và thanh trượt."""
-        self.control_frame = ctk.CTkFrame(self, corner_radius=0, width=320)
+        self.control_frame = ctk.CTkScrollableFrame(self, corner_radius=0, width=320)
         self.control_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         
         # Tiêu đề App
@@ -150,6 +150,37 @@ class PhotoEditorApp(ctk.CTk):
         self.lbl_status_ai.pack(padx=15, pady=(0, 10))
 
         # ==========================================
+        # PHẦN 3: NÂNG CAO ĐỘ PHÂN GIẢI AI (SUPER RES)
+        # ==========================================
+        self.header_sr = ctk.CTkLabel(
+            self.control_frame, 
+            text="3. NÂNG CAO ĐỘ PHÂN GIẢI AI", 
+            font=ctk.CTkFont(size=12, weight="bold"), 
+            text_color="gray"
+        )
+        self.header_sr.pack(anchor="w", padx=20, pady=(15, 5))
+
+        self.sr_frame = ctk.CTkFrame(self.control_frame)
+        self.sr_frame.pack(fill="x", padx=15, pady=5)
+
+        self.btn_upscale_ai = ctk.CTkButton(
+            self.sr_frame,
+            text="Tăng độ phân giải AI (3x)",
+            command=self.upscale_resolution,
+            fg_color="#d35400",
+            hover_color="#e67e22",
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.btn_upscale_ai.pack(fill="x", padx=15, pady=(10, 5))
+
+        self.lbl_status_sr = ctk.CTkLabel(
+            self.sr_frame, 
+            text="Trạng thái AI: Sẵn sàng", 
+            font=ctk.CTkFont(size=11, slant="italic")
+        )
+        self.lbl_status_sr.pack(padx=15, pady=(0, 10))
+
+        # ==========================================
         # NÚT CHỨC NĂNG CHÍNH (SAVE & RESET)
         # ==========================================
         self.btn_reset = ctk.CTkButton(
@@ -226,6 +257,7 @@ class PhotoEditorApp(ctk.CTk):
         # Reset các thanh trượt về 0 trước khi nạp ảnh mới
         self.reset_sliders(silent=True)
         self.lbl_status_ai.configure(text="Trạng thái AI: Sẵn sàng", text_color="white")
+        self.lbl_status_sr.configure(text="Trạng thái AI: Sẵn sàng", text_color="white")
         
         # Cập nhật hiển thị
         self.update_image()
@@ -291,6 +323,106 @@ class PhotoEditorApp(ctk.CTk):
         self.btn_remove_bg.configure(state="normal")
         self.lbl_status_ai.configure(text="Trạng thái AI: Lỗi xử lý!", text_color="red")
         messagebox.showerror("Lỗi tách nền", f"Đã xảy ra lỗi khi tách nền:\n{err_msg}")
+
+    def ai_super_resolution_core(self, img):
+        """ponytail: Cải thiện độ phân giải AI 3x sử dụng mô hình ONNX SubPixelCNN tile-based."""
+        import urllib.request
+        import onnxruntime as ort
+
+        model_dir = os.path.join(os.path.expanduser('~'), '.cache', 'py-photo')
+        os.makedirs(model_dir, exist_ok=True)
+        model_path = os.path.join(model_dir, 'super-resolution-10.onnx')
+        
+        if not os.path.exists(model_path):
+            url = 'https://huggingface.co/onnxmodelzoo/super-resolution-10/resolve/main/super-resolution-10.onnx'
+            urllib.request.urlretrieve(url, model_path)
+            
+        sess = ort.InferenceSession(model_path)
+        inp_name = sess.get_inputs()[0].name
+        
+        has_alpha = (img.shape[2] == 4)
+        if has_alpha:
+            bgr = img[:, :, :3]
+            alpha = img[:, :, 3]
+        else:
+            bgr = img
+            alpha = None
+            
+        ycrcb = cv2.cvtColor(bgr, cv2.COLOR_BGR2YCrCb)
+        y, cr, cb = cv2.split(ycrcb)
+        
+        h, w = y.shape
+        scale = 3
+        h_out, w_out = h * scale, w * scale
+        y_out = np.zeros((h_out, w_out), dtype=np.uint8)
+        
+        tile_size = 224
+        for i in range(0, h, tile_size):
+            for j in range(0, w, tile_size):
+                tile_h = min(tile_size, h - i)
+                tile_w = min(tile_size, w - j)
+                tile = y[i:i+tile_h, j:j+tile_w]
+                
+                pad_h = tile_size - tile_h
+                pad_w = tile_size - tile_w
+                if pad_h > 0 or pad_w > 0:
+                    tile_padded = np.pad(tile, ((0, pad_h), (0, pad_w)), mode='reflect')
+                else:
+                    tile_padded = tile
+                    
+                y_input = np.expand_dims(np.expand_dims(tile_padded.astype(np.float32) / 255.0, axis=0), axis=0)
+                out_tile = sess.run(None, {inp_name: y_input})[0][0, 0]
+                out_tile = (out_tile * 255.0).clip(0, 255).astype(np.uint8)
+                
+                out_tile_valid = out_tile[0:tile_h*scale, 0:tile_w*scale]
+                y_out[i*scale:i*scale+tile_h*scale, j*scale:j*scale+tile_w*scale] = out_tile_valid
+                
+        cr_up = cv2.resize(cr, (w_out, h_out), interpolation=cv2.INTER_CUBIC)
+        cb_up = cv2.resize(cb, (w_out, h_out), interpolation=cv2.INTER_CUBIC)
+        merged = cv2.merge([y_out, cr_up, cb_up])
+        bgr_res = cv2.cvtColor(merged, cv2.COLOR_YCrCb2BGR)
+        
+        if has_alpha:
+            alpha_res = cv2.resize(alpha, (w_out, h_out), interpolation=cv2.INTER_CUBIC)
+            return cv2.merge([bgr_res[:,:,0], bgr_res[:,:,1], bgr_res[:,:,2], alpha_res])
+        return bgr_res
+
+    def upscale_resolution(self):
+        """Kích hoạt tiến trình tăng độ phân giải AI trong Thread ngầm."""
+        if self.full_original_cv_img is None:
+            messagebox.showwarning("Cảnh báo", "Bạn chưa import ảnh chính để tăng độ phân giải.")
+            return
+
+        self.btn_upscale_ai.configure(state="disabled")
+        self.lbl_status_sr.configure(text="Đang xử lý nâng độ phân giải AI...", text_color="yellow")
+
+        def worker():
+            try:
+                high_res = self.ai_super_resolution_core(self.full_original_cv_img)
+                self.full_original_cv_img = high_res
+                
+                h, w = self.full_original_cv_img.shape[:2]
+                scaling = min(self.max_preview_size / h, self.max_preview_size / w)
+                new_w = int(w * scaling)
+                new_h = int(h * scaling)
+                self.preview_original_cv_img = cv2.resize(self.full_original_cv_img, (new_w, new_h))
+                
+                self.after(0, self.on_upscale_success)
+            except Exception as e:
+                self.after(0, lambda: self.on_upscale_error(str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_upscale_success(self):
+        self.btn_upscale_ai.configure(state="normal")
+        h, w = self.full_original_cv_img.shape[:2]
+        self.lbl_status_sr.configure(text=f"Trạng thái AI: Tăng 3x thành công ({w}x{h})!", text_color="green")
+        self.update_image()
+
+    def on_upscale_error(self, err_msg):
+        self.btn_upscale_ai.configure(state="normal")
+        self.lbl_status_sr.configure(text="Trạng thái AI: Lỗi xử lý!", text_color="red")
+        messagebox.showerror("Lỗi tăng độ phân giải", f"Đã xảy ra lỗi khi tăng độ phân giải:\n{err_msg}")
 
     def process_core(self, cv_img, r_val, g_val, b_val, brightness, contrast):
         """Hàm xử lý các hiệu ứng màu sắc trên ảnh chính."""
